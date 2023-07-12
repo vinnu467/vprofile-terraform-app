@@ -1,0 +1,84 @@
+pipeline {
+    agent any
+    tools {
+        maven 'maven3'
+    }
+    parameters {
+        choice(name: 'DEPLOY_ENV', choices: ['QA', 'Stage', 'Prod'], description: 'Deployment environment')
+        string(name: 'SERVER_IP', defaultValue: '3.110.159.232', description: 'Server IP')
+        string(name: 'S3_BUCKET', defaultValue: 'vprofile-', description: 'S3 bucket')
+    }
+        
+    environment {
+        version = ''
+    }
+        stages{
+            stage('Checkout') {
+            steps {
+                script {
+                    if (params.DEPLOY_ENV == 'QA') {
+                        checkout(
+                            [$class: 'GitSCM',
+                            branches: [[name: '*/develop']],
+                            doGenerateSubmoduleConfigurations: false,
+                            extensions: [],
+                            submoduleCfg: [],
+                            userRemoteConfigs: [[
+                                credentialsId: 'Github',
+                                url: 'git@github.com:MaithriMG/vprofile.git'
+                            ]]
+                            ]
+                        )
+                    } else { 
+                        // For Stage and Prod, switch to master branch
+                        checkout(
+                            [$class: 'GitSCM',
+                            branches: [[name: '*/master']],
+                            doGenerateSubmoduleConfigurations: false,
+                            extensions: [],
+                            submoduleCfg: [],
+                            userRemoteConfigs: [[
+                                credentialsId: 'Github',
+                                url: 'git@github.com:MaithriMG/vprofile.git'
+                            ]]
+                            ]
+                        )
+                    }
+                }
+            }
+        }
+        stage('Read POM') {
+            steps {
+                script {
+                    def pom = readMavenPom file: 'pom.xml'
+                    version = pom.version
+                    echo "Project version is: ${version}"
+                }
+            }
+        }
+        stage("Build Artifact") {
+            steps {
+                script {
+                    sh 'mvn -f pom.xml clean package'
+                }
+            }
+        }
+        stage('Deploy to S3') {
+            steps {
+                withCredentials([string(credentialsId: 'AWS_Storage', variable: 'AWS_CREDENTIALS')]) {
+                    sh 'aws configure set aws_access_key_id AKIAXBTGTTR5AKSFTYN4'
+                    sh 'aws configure set aws_secret_access_key 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'
+                    sh "aws s3 cp target/vprofile-${version}.war s3://${S3_BUCKET}/vprofile-${version}-${DEPLOY_ENV}.war"
+                }
+            }
+        }
+        stage('Deploy') {
+            steps {
+                sshagent(credentials: ['Tomcat_server']) {
+                    sh "ssh -o StrictHostKeyChecking=no ubuntu@${SERVER_IP} 'aws s3 cp s3://${S3_BUCKET}/vprofile-${version}-${DEPLOY_ENV}.war ~/'"
+                    sh "ssh -o StrictHostKeyChecking=no ubuntu@${SERVER_IP} 'sudo mv ~/vprofile-${version}-${DEPLOY_ENV}.war /var/lib/tomcat9/webapps/vprofile-${version}-${DEPLOY_ENV}.war'"  
+                    sh "ssh -o StrictHostKeyChecking=no ubuntu@${SERVER_IP} 'sudo systemctl restart tomcat9'" }
+            }
+        }
+    }
+}
